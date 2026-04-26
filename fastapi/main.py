@@ -260,6 +260,7 @@ async def _regen_status():
                 "",
             ]
 
+    BOT_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BOT_STATUS_PATH.write_text("\n".join(lines))
 
 

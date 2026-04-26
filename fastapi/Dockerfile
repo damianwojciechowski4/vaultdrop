@@ -11,7 +11,9 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install defuddle (used by save-url skill)
 RUN npm install -g defuddle-cli 2>/dev/null || true
 
-RUN useradd -m -u 1000 -s /bin/bash vaultdrop
+RUN useradd -m -u 1000 -s /bin/bash vaultdrop && \
+    mkdir -p /data && \
+    chown vaultdrop:vaultdrop /data
 
 WORKDIR /app
 COPY requirements.txt .
