@@ -1,0 +1,27 @@
+services:
+  discord-bot:
+    build: ./discord-bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - fastapi
+    networks:
+      - internal
+
+  fastapi:
+    build: ./fastapi
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /home/ubuntu/vault:/vault          # vault on cc-host
+      - /home/ubuntu/.claude:/root/.claude:ro  # Claude auth (read-only)
+      - homelab-data:/data                 # SQLite persistence
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  homelab-data:

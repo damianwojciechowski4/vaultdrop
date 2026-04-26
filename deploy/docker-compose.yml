@@ -1,0 +1,32 @@
+# cc-host deployment — uses pre-built images from GHCR
+# Usage:
+#   docker login ghcr.io -u damianwojciechowski4 --password-stdin <<< $GITHUB_TOKEN
+#   docker compose pull && docker compose up -d
+
+services:
+  discord-bot:
+    image: ghcr.io/damianwojciechowski4/vaultdrop-bot:latest
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - fastapi
+    networks:
+      - internal
+
+  fastapi:
+    image: ghcr.io/damianwojciechowski4/vaultdrop-api:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /home/ubuntu/vault:/vault
+      - /home/ubuntu/.claude:/root/.claude:ro
+      - vaultdrop-data:/data
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  vaultdrop-data:

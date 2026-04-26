@@ -1,0 +1,64 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: damianwojciechowski4
+
+jobs:
+  build-api:
+    name: Build fastapi image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push vaultdrop-api
+        uses: docker/build-push-action@v5
+        with:
+          context: ./fastapi
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/vaultdrop-api:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/vaultdrop-api:${{ github.sha }}
+
+  build-bot:
+    name: Build discord-bot image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push vaultdrop-bot
+        uses: docker/build-push-action@v5
+        with:
+          context: ./discord-bot
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/vaultdrop-bot:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/vaultdrop-bot:${{ github.sha }}
