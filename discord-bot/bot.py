@@ -47,7 +47,7 @@ async def on_message(message: discord.Message):
                 timeout=10,
             )
             if resp.status_code != 202:
-                await message.clear_reactions()
+                await message.remove_reaction("⏳", bot.user)
                 await message.add_reaction("❌")
         except Exception as e:
             print(f"FastAPI unreachable: {e}")
