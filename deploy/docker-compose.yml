@@ -8,6 +8,8 @@ services:
     image: ghcr.io/damianwojciechowski4/vaultdrop-bot:latest
     restart: unless-stopped
     env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
     depends_on:
       - fastapi
     networks:
@@ -18,8 +20,8 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - /home/ubuntu/vault:/vault
-      - /home/ubuntu/.claude:/root/.claude:ro
+      - /home/dwojciech/vault:/vault
+      - /home/dwojciech/.claude:/home/vaultdrop/.claude:ro
       - vaultdrop-data:/data
     networks:
       - internal
@@ -27,6 +29,9 @@ services:
 networks:
   internal:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.34.0.0/24
 
 volumes:
   vaultdrop-data:
