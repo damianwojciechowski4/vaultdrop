@@ -100,6 +100,16 @@ def list_jobs(limit: int = 20):
 # Job processing
 # ---------------------------------------------------------------------------
 
+async def _git_pull() -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(VAULT_PATH), "pull", "--rebase",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    return proc.returncode == 0
+
+
 async def _run_claude(url: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "claude", "--dangerously-skip-permissions", "-p", f"/save-url {url}",
@@ -113,6 +123,9 @@ async def _run_claude(url: str) -> tuple[int, str]:
 
 async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     started_at = datetime.now(timezone.utc)
+
+    # Sync vault before processing
+    await _git_pull()
 
     # Run claude, retry once on failure
     try:
