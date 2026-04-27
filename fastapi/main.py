@@ -116,6 +116,13 @@ async def _git(*args: str) -> tuple[int, str]:
 
 
 async def git_pull(job_id: str) -> bool:
+    # Commit any leftover changes from previous runs before pulling
+    _, status_out = await _git("status", "--porcelain")
+    if status_out:
+        logger.info("[%s] dirty worktree detected, committing leftovers", job_id)
+        await _git("add", ".")
+        await _git("commit", "-m", "bot: commit leftover changes before pull")
+
     rc, err = await _git("pull", "--rebase")
     if rc != 0:
         logger.error("[%s] git pull failed: %s", job_id, err)
