@@ -7,13 +7,13 @@ import uuid
 from datetime import datetime, date, timezone
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger(__name__)
-
 import frontmatter
 import httpx
 from fastapi import BackgroundTasks, FastAPI
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -101,62 +101,116 @@ def list_jobs(limit: int = 20):
 
 
 # ---------------------------------------------------------------------------
-# Job processing
+# Git helpers (all capture stderr for logging)
 # ---------------------------------------------------------------------------
 
-async def _git_pull() -> bool:
+async def _git(*args: str) -> tuple[int, str]:
+    """Run a git command against the vault, return (returncode, stderr)."""
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(VAULT_PATH), "pull", "--rebase",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        "git", "-C", str(VAULT_PATH), *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    await proc.wait()
-    return proc.returncode == 0
+    stdout, stderr = await proc.communicate()
+    return proc.returncode, stderr.decode().strip()
 
 
-async def _run_claude(url: str) -> tuple[int, str]:
+async def git_pull(job_id: str) -> bool:
+    rc, err = await _git("pull", "--rebase")
+    if rc != 0:
+        logger.error("[%s] git pull failed: %s", job_id, err)
+        return False
+    logger.info("[%s] git pull ok", job_id)
+    return True
+
+
+async def git_push(job_id: str, label: str) -> bool:
+    # Stage all changes
+    rc, err = await _git("add", ".")
+    if rc != 0:
+        logger.error("[%s] git add failed: %s", job_id, err)
+        return False
+
+    # Commit
+    rc, err = await _git("commit", "-m", f"bot: save-url {label[:60]}")
+    if rc != 0:
+        logger.warning("[%s] git commit skipped (nothing to commit?): %s", job_id, err)
+        return False
+    logger.info("[%s] git commit ok", job_id)
+
+    # Push with pull-before-retry
+    for attempt in range(3):
+        rc, err = await _git("pull", "--rebase")
+        if rc != 0:
+            logger.warning("[%s] git pull (pre-push) failed: %s", job_id, err)
+
+        rc, err = await _git("push")
+        if rc == 0:
+            logger.info("[%s] git push ok (attempt %d)", job_id, attempt + 1)
+            return True
+        logger.warning("[%s] git push failed (attempt %d): %s", job_id, attempt + 1, err)
+        await asyncio.sleep(5 * (attempt + 1))
+
+    logger.error("[%s] git push failed after 3 attempts", job_id)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Claude runner
+# ---------------------------------------------------------------------------
+
+async def _run_claude(url: str) -> tuple[int, str, str]:
+    """Run claude save-url, return (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
         "claude", "--dangerously-skip-permissions", "-p", f"/save-url {url}",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(VAULT_PATH),
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-    return proc.returncode, stderr.decode()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        return proc.returncode, stdout.decode(), stderr.decode()
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
 
+
+# ---------------------------------------------------------------------------
+# Job processing — main flow
+# ---------------------------------------------------------------------------
 
 async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     started_at = datetime.now(timezone.utc)
     logger.info("[%s] starting — %s", job_id, url)
 
-    # Sync vault before processing
-    pulled = await _git_pull()
-    logger.info("[%s] git pull: %s", job_id, "ok" if pulled else "failed")
+    # 1. Pull latest vault
+    await git_pull(job_id)
 
-    # Run claude, retry once on failure
+    # 2. Run claude (retry once on failure)
     try:
-        returncode, stderr = await _run_claude(url)
-        logger.info("[%s] claude rc=%d", job_id, returncode)
-        if returncode != 0:
-            logger.warning("[%s] claude failed, retrying: %s", job_id, stderr[:200])
+        rc, stdout, stderr = await _run_claude(url)
+        logger.info("[%s] claude rc=%d", job_id, rc)
+        if rc != 0:
+            logger.warning("[%s] claude failed, retrying — stderr: %s", job_id, stderr[:300])
             await asyncio.sleep(5)
-            returncode, stderr = await _run_claude(url)
-            logger.info("[%s] claude retry rc=%d", job_id, returncode)
+            rc, stdout, stderr = await _run_claude(url)
+            logger.info("[%s] claude retry rc=%d", job_id, rc)
     except asyncio.TimeoutError:
-        logger.error("[%s] timed out", job_id)
-        await _handle_failure(job_id, channel_id, "Timed out after 120s")
+        logger.error("[%s] claude timed out (180s)", job_id)
+        await _handle_failure(job_id, channel_id, "Timed out after 180s")
         return
     except Exception as e:
-        logger.error("[%s] exception: %s", job_id, e)
+        logger.error("[%s] claude exception: %s", job_id, e)
         await _handle_failure(job_id, channel_id, str(e))
         return
 
-    if returncode != 0:
-        logger.error("[%s] claude failed after retry: %s", job_id, stderr[:200])
+    if rc != 0:
+        logger.error("[%s] claude failed after retry — stderr: %s", job_id, stderr[:300])
         await _handle_failure(job_id, channel_id, stderr[:300])
         return
 
-    # Parse frontmatter from the newly written file
+    # 3. Parse frontmatter from the newly created file
     title, category, tags, status = None, None, [], "success_partial"
     try:
         files = sorted(INBOX_PATH.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -166,9 +220,11 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
             category = post.get("category")
             tags = post.get("tags", [])
             status = "success"
-    except Exception:
-        pass
+            logger.info("[%s] parsed file: %s", job_id, files[0].name)
+    except Exception as e:
+        logger.warning("[%s] frontmatter parse error: %s", job_id, e)
 
+    # 4. Update DB
     completed_at = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
@@ -178,21 +234,25 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     conn.commit()
     conn.close()
 
-    # Reply to Discord
+    # 5. Notify Discord
     if status == "success":
         tags_str = "  ".join(f"`{t}`" for t in tags) if tags else ""
         content = (
-            f"✅ **Note added to library**\n"
+            f"\u2705 **Note added to library**\n"
             f"**{title}**\n"
             f"Category: `{category}`  {tags_str}"
         )
     else:
-        content = "✅ Note added — title unknown, check inbox"
+        content = "\u2705 Note added \u2014 title unknown, check inbox"
 
-    logger.info("[%s] done — status=%s title=%s", job_id, status, title)
+    logger.info("[%s] done \u2014 status=%s title=%s", job_id, status, title)
     await _notify_discord(channel_id, content)
+
+    # 6. Update status page and push to git
     await _regen_status()
-    asyncio.create_task(_git_push(title or url))
+    pushed = await git_push(job_id, title or url)
+    if not pushed:
+        logger.warning("[%s] git push failed \u2014 changes are local only", job_id)
 
 
 async def _handle_failure(job_id: str, channel_id: str, error: str):
@@ -207,7 +267,7 @@ async def _handle_failure(job_id: str, channel_id: str, error: str):
 
     await _notify_discord(
         channel_id,
-        f"❌ Failed to save — job: `{job_id}`\n```{error[:200]}```",
+        f"\u274c Failed to save \u2014 job: `{job_id}`\n```{error[:200]}```",
     )
     await _regen_status()
 
@@ -225,8 +285,8 @@ async def _notify_discord(channel_id: str, content: str):
                 json={"content": content},
                 timeout=10,
             )
-        except Exception:
-            pass  # non-critical
+        except Exception as e:
+            logger.warning("discord notify failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +294,10 @@ async def _notify_discord(channel_id: str, content: str):
 # ---------------------------------------------------------------------------
 
 STATUS_ICONS = {
-    "success": "✅",
-    "success_partial": "⚠️",
-    "failed": "❌",
-    "pending": "⏳",
+    "success": "\u2705",
+    "success_partial": "\u26a0\ufe0f",
+    "failed": "\u274c",
+    "pending": "\u23f3",
 }
 
 
@@ -256,7 +316,7 @@ async def _regen_status():
         "status: system",
         "---",
         "",
-        "# Discord Bot — Job Status",
+        "# Discord Bot \u2014 Job Status",
         "",
         f"_Last updated: {updated}_",
         "",
@@ -269,7 +329,7 @@ async def _regen_status():
     for row in rows:
         icon = STATUS_ICONS.get(row["status"], "?")
         title = (row["title"] or row["url"])[:50]
-        category = row["category"] or "—"
+        category = row["category"] or "\u2014"
         created = row["created_at"][:16]
         lines.append(
             f"| `{row['id']}` | {icon} | {title} | {category} | {created} |"
@@ -280,7 +340,7 @@ async def _regen_status():
         lines += ["", "## Failed Jobs", ""]
         for row in failed:
             lines += [
-                f"### `{row['id']}` — {row['created_at'][:16]}",
+                f"### `{row['id']}` \u2014 {row['created_at'][:16]}",
                 f"- URL: {row['url']}",
                 f"- Error: `{row['error']}`",
                 "",
@@ -288,35 +348,3 @@ async def _regen_status():
 
     BOT_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BOT_STATUS_PATH.write_text("\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# Git push
-# ---------------------------------------------------------------------------
-
-async def _git_push(label: str):
-    async def run(*args):
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        return proc.returncode
-
-    await run("git", "-C", str(VAULT_PATH), "add", ".")
-    rc = await run("git", "-C", str(VAULT_PATH), "commit", "-m", f"bot: save-url {label[:60]}")
-    if rc != 0:
-        logger.warning("git commit failed (nothing to commit?)")
-        return
-
-    for attempt in range(3):
-        await run("git", "-C", str(VAULT_PATH), "pull", "--rebase")
-        rc = await run("git", "-C", str(VAULT_PATH), "push")
-        if rc == 0:
-            logger.info("git push ok (attempt %d)", attempt + 1)
-            break
-        logger.warning("git push failed (attempt %d)", attempt + 1)
-        await asyncio.sleep(5 * (attempt + 1))
-    else:
-        logger.error("git push failed after 3 attempts")

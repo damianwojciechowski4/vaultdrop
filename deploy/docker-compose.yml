@@ -22,6 +22,9 @@ services:
     volumes:
       - /home/dwojciech/vault:/vault
       - /home/dwojciech/.claude:/home/vaultdrop/.claude:ro
+      - /home/dwojciech/.claude.json:/home/vaultdrop/.claude.json:ro
+      - /home/dwojciech/.gitconfig:/home/vaultdrop/.gitconfig:ro
+      - /home/dwojciech/.git-credentials:/home/vaultdrop/.git-credentials:ro
       - vaultdrop-data:/data
     networks:
       - internal
