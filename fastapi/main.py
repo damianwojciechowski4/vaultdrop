@@ -82,7 +82,10 @@ async def create_job(req: JobRequest, background_tasks: BackgroundTasks):
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        """INSERT INTO jobs
+           (id, url, status, channel_id, message_id,
+            title, category, tags, error, filename, created_at, completed_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (job_id, req.url, "pending", req.channel_id, req.message_id,
          None, None, None, None, None, now, None),
     )
