@@ -1,10 +1,14 @@
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import uuid
 from datetime import datetime, date, timezone
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 import frontmatter
 import httpx
@@ -123,24 +127,32 @@ async def _run_claude(url: str) -> tuple[int, str]:
 
 async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     started_at = datetime.now(timezone.utc)
+    logger.info("[%s] starting — %s", job_id, url)
 
     # Sync vault before processing
-    await _git_pull()
+    pulled = await _git_pull()
+    logger.info("[%s] git pull: %s", job_id, "ok" if pulled else "failed")
 
     # Run claude, retry once on failure
     try:
         returncode, stderr = await _run_claude(url)
+        logger.info("[%s] claude rc=%d", job_id, returncode)
         if returncode != 0:
+            logger.warning("[%s] claude failed, retrying: %s", job_id, stderr[:200])
             await asyncio.sleep(5)
             returncode, stderr = await _run_claude(url)
+            logger.info("[%s] claude retry rc=%d", job_id, returncode)
     except asyncio.TimeoutError:
+        logger.error("[%s] timed out", job_id)
         await _handle_failure(job_id, channel_id, "Timed out after 120s")
         return
     except Exception as e:
+        logger.error("[%s] exception: %s", job_id, e)
         await _handle_failure(job_id, channel_id, str(e))
         return
 
     if returncode != 0:
+        logger.error("[%s] claude failed after retry: %s", job_id, stderr[:200])
         await _handle_failure(job_id, channel_id, stderr[:300])
         return
 
@@ -177,6 +189,7 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     else:
         content = "✅ Note added — title unknown, check inbox"
 
+    logger.info("[%s] done — status=%s title=%s", job_id, status, title)
     await _notify_discord(channel_id, content)
     await _regen_status()
     asyncio.create_task(_git_push(title or url))
@@ -292,10 +305,18 @@ async def _git_push(label: str):
         return proc.returncode
 
     await run("git", "-C", str(VAULT_PATH), "add", ".")
-    await run("git", "-C", str(VAULT_PATH), "commit", "-m", f"bot: save-url {label[:60]}")
+    rc = await run("git", "-C", str(VAULT_PATH), "commit", "-m", f"bot: save-url {label[:60]}")
+    if rc != 0:
+        logger.warning("git commit failed (nothing to commit?)")
+        return
 
     for attempt in range(3):
+        await run("git", "-C", str(VAULT_PATH), "pull", "--rebase")
         rc = await run("git", "-C", str(VAULT_PATH), "push")
         if rc == 0:
+            logger.info("git push ok (attempt %d)", attempt + 1)
             break
+        logger.warning("git push failed (attempt %d)", attempt + 1)
         await asyncio.sleep(5 * (attempt + 1))
+    else:
+        logger.error("git push failed after 3 attempts")
