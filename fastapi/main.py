@@ -47,6 +47,7 @@ def init_db():
             category    TEXT,
             tags        TEXT,
             error       TEXT,
+            filename    TEXT,
             created_at  TEXT NOT NULL,
             completed_at TEXT
         )
@@ -77,9 +78,9 @@ async def create_job(req: JobRequest, background_tasks: BackgroundTasks):
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (job_id, req.url, "pending", req.channel_id, req.message_id,
-         None, None, None, None, now, None),
+         None, None, None, None, None, now, None),
     )
     conn.commit()
     conn.close()
@@ -237,7 +238,7 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
         return
 
     # 3. Parse frontmatter from the newly created file
-    title, category, tags, status = None, None, [], "success_partial"
+    title, category, tags, status, filename = None, None, [], "success_partial", None
     try:
         files = sorted(INBOX_PATH.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
         if files and files[0].stat().st_mtime > started_at.timestamp():
@@ -245,6 +246,7 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
             title = post.get("title")
             category = post.get("category")
             tags = post.get("tags", [])
+            filename = files[0].name
             status = "success"
             logger.info("[%s] parsed file: %s", job_id, files[0].name)
     except Exception as e:
@@ -254,8 +256,8 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
     completed_at = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
-        "UPDATE jobs SET status=?,title=?,category=?,tags=?,completed_at=? WHERE id=?",
-        (status, title, category, json.dumps(tags), completed_at, job_id),
+        "UPDATE jobs SET status=?,title=?,category=?,tags=?,filename=?,completed_at=? WHERE id=?",
+        (status, title, category, json.dumps(tags), filename, completed_at, job_id),
     )
     conn.commit()
     conn.close()
@@ -266,12 +268,14 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
         content = (
             f"\u2705 **Note added to library**\n"
             f"**{title}**\n"
+            f"File: `{filename}`\n"
             f"Category: `{category}`  {tags_str}"
         )
     else:
-        content = "\u2705 Note added \u2014 title unknown, check inbox"
+        file_info = f"\nFile: `{filename}`" if filename else ""
+        content = f"\u2705 Note added \u2014 title unknown, check inbox{file_info}"
 
-    logger.info("[%s] done \u2014 status=%s title=%s", job_id, status, title)
+    logger.info("[%s] done \u2014 status=%s title=%s filename=%s", job_id, status, title, filename)
     await _notify_discord(channel_id, content)
 
     # 6. Update status page and push to git
@@ -348,17 +352,18 @@ async def _regen_status():
         "",
         "## Recent Jobs",
         "",
-        "| Job | Status | Title | Category | Created |",
-        "|-----|--------|-------|----------|---------|",
+        "| Job | Status | Title | Category | Filename | Created |",
+        "|-----|--------|-------|----------|----------|---------|",
     ]
 
     for row in rows:
         icon = STATUS_ICONS.get(row["status"], "?")
         title = (row["title"] or row["url"])[:50]
         category = row["category"] or "\u2014"
+        filename = row["filename"] or "\u2014"
         created = row["created_at"][:16]
         lines.append(
-            f"| `{row['id']}` | {icon} | {title} | {category} | {created} |"
+            f"| `{row['id']}` | {icon} | {title} | {category} | {filename} | {created} |"
         )
 
     failed = [r for r in rows if r["status"] == "failed"]
