@@ -1,85 +1,40 @@
-version: '3.9'
-
-# Vaultdrop Deployment — uses pre-built images from GHCR
-#
-# Prerequisites:
-#   1. Create .env file in this directory with required variables:
-#      - DISCORD_TOKEN
-#      - FASTAPI_URL (e.g., http://fastapi:8000)
-#      - INBOX_CHANNEL_ID
-#   2. Ensure vault path exists: mkdir -p ~/vault
-#   3. Authenticate with GHCR if using private images
-#
+# cc-host deployment — uses pre-built images from GHCR
 # Usage:
-#   docker login ghcr.io -u {username} --password-stdin <<< $GITHUB_TOKEN
-#   docker compose pull
-#   docker compose up -d
-#   docker compose logs -f         # Monitor logs
-#   docker compose down            # Stop services
+#   docker login ghcr.io -u damianwojciechowski4 --password-stdin <<< $GITHUB_TOKEN
+#   docker compose pull && docker compose up -d
 
 services:
   discord-bot:
     image: ghcr.io/damianwojciechowski4/vaultdrop-bot:latest
-    container_name: vaultdrop-bot
     restart: unless-stopped
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
     depends_on:
-      fastapi:
-        condition: service_healthy
+      - fastapi
     networks:
       - internal
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import discord; print('ok')"]
-      interval: 60s
-      timeout: 10s
-      retries: 2
-      start_period: 30s
 
   fastapi:
     image: ghcr.io/damianwojciechowski4/vaultdrop-api:latest
-    container_name: vaultdrop-api
     restart: unless-stopped
     env_file: .env
     volumes:
-      # Vault repository (read-write for git operations)
-      - ${HOME}/vault:/vault
-      # Claude configuration
-      - ${HOME}/.claude:/home/vaultdrop/.claude
-      - ${HOME}/.claude.json:/home/vaultdrop/.claude.json:ro
-      # Git configuration (for commits/pushes)
-      - ${HOME}/.gitconfig:/home/vaultdrop/.gitconfig:ro
-      - ${HOME}/.git-credentials:/home/vaultdrop/.git-credentials:ro
-      # Job database persistence
+      - $HOME/vault:/vault
+      - $HOME/.claude:/home/vaultdrop/.claude
+      - $HOME/.claude.json:/home/vaultdrop/.claude.json
+      - $HOME/.gitconfig:/home/vaultdrop/.gitconfig:ro
+      - $HOME/.git-credentials:/home/vaultdrop/.git-credentials:ro
       - vaultdrop-data:/data
     networks:
       - internal
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/jobs?limit=1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
 networks:
   internal:
     driver: bridge
-    name: vaultdrop-net
     ipam:
       config:
         - subnet: 172.34.0.0/24
 
 volumes:
   vaultdrop-data:
-    name: vaultdrop-db
