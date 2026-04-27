@@ -52,6 +52,10 @@ def init_db():
             completed_at TEXT
         )
     """)
+    # migrate existing tables that predate the filename column
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if "filename" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN filename TEXT")
     conn.commit()
     conn.close()
 
