@@ -104,42 +104,60 @@ def list_jobs(limit: int = 20):
 # Git helpers (all capture stderr for logging)
 # ---------------------------------------------------------------------------
 
-async def _git(*args: str) -> tuple[int, str]:
-    """Run a git command against the vault, return (returncode, stderr)."""
+async def _git(*args: str) -> tuple[int, str, str]:
+    """Run a git command against the vault, return (returncode, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(VAULT_PATH), *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
-    return proc.returncode, stderr.decode().strip()
+    return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
 
 
 async def git_pull(job_id: str) -> bool:
+    # Check for stuck rebase and recover
+    rebase_dir = VAULT_PATH / ".git" / "rebase-merge"
+    rebase_apply_dir = VAULT_PATH / ".git" / "rebase-apply"
+    if rebase_dir.exists() or rebase_apply_dir.exists():
+        logger.warning("[%s] stuck rebase detected, aborting it", job_id)
+        await _git("rebase", "--abort")
+
+    # Make sure we're on main branch
+    rc, branch_out, _ = await _git("branch", "--show-current")
+    if rc == 0 and branch_out != "main":
+        logger.warning("[%s] not on main (on '%s'), checking out main", job_id, branch_out)
+        await _git("checkout", "main")
+
     # Commit any leftover changes from previous runs before pulling
-    _, status_out = await _git("status", "--porcelain")
+    _, status_out, _ = await _git("status", "--porcelain")
     if status_out:
         logger.info("[%s] dirty worktree detected, committing leftovers", job_id)
         await _git("add", ".")
         await _git("commit", "-m", "bot: commit leftover changes before pull")
 
-    rc, err = await _git("pull", "--rebase")
+    rc, _, err = await _git("pull", "--rebase")
     if rc != 0:
         logger.error("[%s] git pull failed: %s", job_id, err)
-        return False
+        # If pull --rebase fails, abort and try merge instead
+        await _git("rebase", "--abort")
+        rc, _, err = await _git("pull")
+        if rc != 0:
+            logger.error("[%s] git pull (merge) also failed: %s", job_id, err)
+            return False
     logger.info("[%s] git pull ok", job_id)
     return True
 
 
 async def git_push(job_id: str, label: str) -> bool:
     # Stage all changes
-    rc, err = await _git("add", ".")
+    rc, _, err = await _git("add", ".")
     if rc != 0:
         logger.error("[%s] git add failed: %s", job_id, err)
         return False
 
     # Commit
-    rc, err = await _git("commit", "-m", f"bot: save-url {label[:60]}")
+    rc, _, err = await _git("commit", "-m", f"bot: save-url {label[:60]}")
     if rc != 0:
         logger.warning("[%s] git commit skipped (nothing to commit?): %s", job_id, err)
         return False
@@ -147,11 +165,12 @@ async def git_push(job_id: str, label: str) -> bool:
 
     # Push with pull-before-retry
     for attempt in range(3):
-        rc, err = await _git("pull", "--rebase")
+        rc, _, err = await _git("pull", "--rebase")
         if rc != 0:
             logger.warning("[%s] git pull (pre-push) failed: %s", job_id, err)
+            await _git("rebase", "--abort")
 
-        rc, err = await _git("push")
+        rc, _, err = await _git("push")
         if rc == 0:
             logger.info("[%s] git push ok (attempt %d)", job_id, attempt + 1)
             return True
@@ -175,7 +194,7 @@ async def _run_claude(url: str) -> tuple[int, str, str]:
         cwd=str(VAULT_PATH),
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
         return proc.returncode, stdout.decode(), stderr.decode()
     except asyncio.TimeoutError:
         proc.kill()
@@ -204,8 +223,8 @@ async def process_job(job_id: str, url: str, channel_id: str, message_id: str):
             rc, stdout, stderr = await _run_claude(url)
             logger.info("[%s] claude retry rc=%d", job_id, rc)
     except asyncio.TimeoutError:
-        logger.error("[%s] claude timed out (180s)", job_id)
-        await _handle_failure(job_id, channel_id, "Timed out after 180s")
+        logger.error("[%s] claude timed out (300s)", job_id)
+        await _handle_failure(job_id, channel_id, "Timed out after 300s")
         return
     except Exception as e:
         logger.error("[%s] claude exception: %s", job_id, e)
