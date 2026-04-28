@@ -3,8 +3,14 @@ name: Build & Push Docker Images
 on:
   push:
     branches: [main]
+    paths:
+      - 'fastapi/**'
+      - 'discord-bot/**'
   pull_request:
     branches: [main]
+    paths:
+      - 'fastapi/**'
+      - 'discord-bot/**'
 
 env:
   REGISTRY: ghcr.io

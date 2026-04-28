@@ -120,6 +120,11 @@ fastapi:
   - Restarts: unless-stopped
 ```
 
+> **Note for forks**: The image paths in `deploy/docker-compose.yml` are hardcoded to the author's private GHCR registry (`ghcr.io/damianwojciechowski4/...`). If you fork this repo you must:
+> 1. Update the `OWNER` variable in `.github/workflows/docker-build.yml` to your GitHub username.
+> 2. Update both `image:` lines in `deploy/docker-compose.yml` to point to your own registry.
+> 3. Push to `main` to trigger the CI build and populate your registry.
+
 **Usage**:
 ```bash
 cd deploy/
@@ -214,4 +219,4 @@ python bot.py
 
 ## License
 
-TBD
+MIT
