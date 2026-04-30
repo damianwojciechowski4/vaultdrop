@@ -1,11 +1,19 @@
-# cc-host deployment — uses pre-built images from GHCR
-# Usage:
-#   docker login ghcr.io -u damianwojciechowski4 --password-stdin <<< $GITHUB_TOKEN
-#   docker compose pull && docker compose up -d
+# Vaultdrop Docker Compose Configuration
+#
+# IMPORTANT: Update the image paths below to match your registry and username
+# These images must be built and pushed by your CI/CD pipeline
+# See .github/workflows/docker-build.yml for the build configuration
+#
+# Steps to deploy:
+#   1. Fork this repository or set up your own registry
+#   2. Update IMAGE_REGISTRY and IMAGE_OWNER variables below
+#   3. Ensure your images are built and pushed to your registry
+#   4. Run: docker login {IMAGE_REGISTRY} -u {username} --password-stdin <<< $GITHUB_TOKEN
+#   5. Run: docker compose pull && docker compose up -d
 
 services:
   discord-bot:
-    image: ghcr.io/damianwojciechowski4/vaultdrop-bot:latest
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER:-your-username}/vaultdrop-bot:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -16,7 +24,7 @@ services:
       - internal
 
   fastapi:
-    image: ghcr.io/damianwojciechowski4/vaultdrop-api:latest
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER:-your-username}/vaultdrop-api:latest
     restart: unless-stopped
     env_file: .env
     volumes:
