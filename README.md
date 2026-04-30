@@ -26,6 +26,8 @@ FastAPI Backend (fastapi/)
 Discord Channel (status update)
 ```
 
+![Vaultdrop Architecture Diagram](assets/vaultdrop-topology.png)
+
 ## Directory Structure
 
 ```
