@@ -26,6 +26,10 @@ FastAPI Backend (fastapi/)
 Discord Channel (status update)
 ```
 
+![Vaultdrop Architecture Diagram](assets/vaultdrop-topology.png)
+
+> **Note**: The topology diagram is stored in this repository as a reference. If you need to customize the architecture diagram for your setup, regenerate it according to your system design and update the image path accordingly.
+
 ## Directory Structure
 
 ```
